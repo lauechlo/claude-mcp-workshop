@@ -8,32 +8,17 @@ import os
 import sys
 import json
 import csv
-from dotenv import load_dotenv
 
-# Load environment variables from .env file
-load_dotenv()
-
-# Verify credentials are loaded
-if "SPOTIFY_CLIENT_ID" not in os.environ or "SPOTIFY_CLIENT_SECRET" not in os.environ:
-    print("[ERROR] Missing Spotify credentials!")
-    print("Please create a .env file with your Spotify credentials.")
-    print("See .env.example for the template.")
-    sys.exit(1)
+# Set environment variables
+os.environ["SPOTIFY_CLIENT_ID"] = "406868b824c14165a7772b627f763e97"
+os.environ["SPOTIFY_CLIENT_SECRET"] = "636060ca87ef4c9782bcc687c03b6780"
 
 # Import the server
 sys.path.insert(0, os.path.dirname(__file__))
 import music_server_updated_2025 as server
-def load_songs_from_csv(filename):
-    """Load songs from CSV file"""
-    songs = []
-    with open(filename, 'r', encoding='utf-8') as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            songs.append({
-                "song_name": row["song_name"],
-                "artist_name": row.get("artist_name", "")
-            })
-    return songs
+
+# Import CSV utilities for automatic conversion
+from csv_utils import auto_load_songs, load_songs_from_csv, print_mcp_format
 
 def get_songs_interactively():
     """Get songs from user input interactively"""
@@ -265,7 +250,7 @@ async def tool_4_top_artists(songs):
         if artist.get('songs'):
             print(f"     Songs:")
             for song in artist['songs']:
-                print(f"       - {song['name']}")
+                print(f"       - {song}")
     print_separator()
 
 async def tool_5_create_playlist(songs, playlist_name):
@@ -401,6 +386,23 @@ async def tool_12_find_missing(songs):
 
     print_separator()
 
+async def search_song_to_id(song_name, artist_name=None):
+    """Search for a song and return its Spotify ID"""
+    query = song_name
+    if artist_name:
+        query = f"{song_name} {artist_name}"
+
+    result = await server.call_tool("search_tracks", {"query": query, "limit": 1})
+    data = json.loads(result[0].text)
+
+    if data:
+        track = data[0]
+        print(f"  Found: {track['name']} by {', '.join(track['artists'])} (ID: {track['id']})")
+        return track['id']
+    else:
+        print(f"  Not found: {query}")
+        return None
+
 async def run_all_analyses(songs):
     """Run all 6 collection-based tools"""
     print("\n" + "=" * 70)
@@ -458,10 +460,15 @@ async def main():
             print("Default: song_list_template.csv")
             return
 
-        # Load songs
+        # Load songs (auto-detects CSV or JSON)
         print(f"\n[OK] Loading songs from: {csv_file}")
-        songs = load_songs_from_csv(csv_file)
+        songs = auto_load_songs(csv_file)
         print(f"[OK] Loaded {len(songs)} songs")
+
+        # Print MCP-compatible JSON format for easy copying
+        if csv_file.endswith('.csv'):
+            print("\n[INFO] To use this CSV in MCP Inspector, copy the JSON below:")
+            print_mcp_format(csv_file)
 
     # Show menu
     print("\nCOLLECTION ANALYSIS TOOLS (require song list):")
@@ -521,20 +528,94 @@ async def main():
                 print(f"   Popularity: {track['popularity']}/100")
             print_separator()
     elif choice == "11":
-        print("\nNeed at least one seed (track ID, artist ID, or genre)")
-        seed = input("Enter seed track ID or genre: ").strip()
-        if seed:
-            # Check if it's a genre or ID
-            if len(seed) < 10:  # Probably a genre
-                result = await server.call_tool("get_recommendations", {"seed_genres": [seed], "limit": 10})
-            else:
-                result = await server.call_tool("get_recommendations", {"seed_tracks": [seed], "limit": 10})
+        print("\n" + "=" * 70)
+        print("  GET RECOMMENDATIONS")
+        print("=" * 70)
+        print("\nProvide at least one seed (up to 5 total across all types):")
+        print("  - Song names (e.g., 'Blinding Lights by The Weeknd')")
+        print("  - Artist names (e.g., 'Taylor Swift')")
+        print("  - Genres (e.g., 'pop, rock, electronic')")
+        print("\nLeave blank to skip any category.")
+
+        # Collect seed songs
+        seed_tracks = []
+        songs_input = input("\nSeed songs (comma-separated, format: 'Song by Artist'): ").strip()
+        if songs_input:
+            for song_str in songs_input.split(','):
+                song_str = song_str.strip()
+                if not song_str:
+                    continue
+
+                # Parse song name and artist
+                if " by " in song_str.lower():
+                    parts = song_str.split(" by ", 1)
+                    song_name = parts[0].strip()
+                    artist_name = parts[1].strip()
+                else:
+                    song_name = song_str
+                    artist_name = ""
+
+                # Create song object directly
+                seed_tracks.append({
+                    "song_name": song_name,
+                    "artist_name": artist_name
+                })
+
+        # Collect seed artists
+        seed_artists = []
+        artists_input = input("\nSeed artists (comma-separated): ").strip()
+        if artists_input:
+            seed_artists = [artist.strip() for artist in artists_input.split(',') if artist.strip()]
+
+        # Collect seed genres
+        seed_genres = []
+        genres_input = input("\nSeed genres (comma-separated, e.g., 'pop, rock, hip-hop'): ").strip()
+        if genres_input:
+            seed_genres = [g.strip().lower() for g in genres_input.split(',') if g.strip()]
+            print(f"  Using genres: {', '.join(seed_genres)}")
+
+        # Check if we have at least one seed
+        total_seeds = len(seed_tracks) + len(seed_artists) + len(seed_genres)
+        if total_seeds == 0:
+            print("\n[ERROR] Need at least one seed!")
+        elif total_seeds > 5:
+            print(f"\n[WARNING] Too many seeds ({total_seeds}). Using first 5 only.")
+            # Trim to 5 total
+            remaining = 5
+            seed_tracks = seed_tracks[:min(remaining, len(seed_tracks))]
+            remaining -= len(seed_tracks)
+            seed_artists = seed_artists[:min(remaining, len(seed_artists))]
+            remaining -= len(seed_artists)
+            seed_genres = seed_genres[:min(remaining, len(seed_genres))]
+
+        if total_seeds > 0:
+            # Build request
+            request = {"limit": 20}
+            if seed_tracks:
+                request["seed_tracks"] = seed_tracks
+            if seed_artists:
+                request["seed_artists"] = seed_artists
+            if seed_genres:
+                request["seed_genres"] = seed_genres
+
+            print("\nGetting recommendations...")
+            result = await server.call_tool("get_recommendations", request)
             data = json.loads(result[0].text)
+
             print_separator()
             print("  RECOMMENDATIONS")
             print_separator()
+            print(f"\nBased on:")
+            if seed_tracks:
+                print(f"  - {len(seed_tracks)} song(s)")
+            if seed_artists:
+                print(f"  - {len(seed_artists)} artist(s)")
+            if seed_genres:
+                print(f"  - Genres: {', '.join(seed_genres)}")
+            print(f"\nRecommended tracks:")
             for i, track in enumerate(data, 1):
-                print(f"{i}. {track['name']} by {', '.join(track['artists'])}")
+                print(f"  {i}. {track['name']} by {', '.join(track['artists'])}")
+                print(f"     Popularity: {track['popularity']}/100")
             print_separator()
     elif choice == "12":
         artist_id = input("Enter artist ID: ").strip()
