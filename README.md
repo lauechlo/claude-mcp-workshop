@@ -1,8 +1,9 @@
 # 🎵 Workshop Music MCP Server
 
-**AI @Princeton x CBC Workshop - October 30, 2025**
+**AI @Princeton x CBC Workshop - October 31, 2025**
 
 Build a real MCP server that connects Claude to Spotify! Search songs, analyze music collections, and create playlists using natural language.
+NOTE: You will need your Spotify API client and secret keys for this server, so just follow along the code and test it out later!
 
 ---
 
